@@ -1,22 +1,33 @@
 import {calculate, defaults, bounds} from './calculator.mjs';
+import {materials, defaultMaterial} from './materials.mjs';
 const form=document.querySelector('#calculator');
 const money=new Intl.NumberFormat('ru-BY',{minimumFractionDigits:2,maximumFractionDigits:2});
 const num=(v,d=1)=>new Intl.NumberFormat('ru-BY',{maximumFractionDigits:d}).format(v);
 const labels={material:'Пластик',energy:'Электричество',wear:'Износ принтера',maintenance:'Обслуживание',labor:'Ручная работа',consumables:'Расходники',extra:'Другие расходы'};
 const colors={material:'#c7f451',energy:'#97c1ff',wear:'#f3c27c',maintenance:'#b4a1e3',labor:'#75d5b4',consumables:'#d3dace',extra:'#f29c9c'};
 let timer;
+const dimensions=['x','y','z'];
+const materialSelect=document.querySelector('#materialPreset');
+for(const group of ['PLA','PETG','Свой материал']){const optgroup=document.createElement('optgroup');optgroup.label=group;for(const m of materials.filter(m=>m.group===group)){const option=document.createElement('option');option.value=m.id;option.textContent=m.name+(m.price===null?'':` · ${m.price} BYN/кг`);optgroup.append(option);}materialSelect.append(optgroup);}
+materialSelect.value=defaultMaterial;
+function renderMaterial(){const m=materials.find(m=>m.id===materialSelect.value);const edited=m.price!==null&&form.elements.filamentPrice.valueAsNumber!==m.price;document.querySelector('#material-note').textContent=m.note+(edited?' Используется ваша цена за кг.':'');const link=document.querySelector('#material-source');link.hidden=!m.url;if(m.url)link.href=m.url;}
+const sources=document.querySelector('#material-sources');for(const m of materials.filter(m=>m.url)){const p=document.createElement('p');const a=document.createElement('a');a.href=m.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent=m.name+' ↗';p.append(a,document.createTextNode(m.note));sources.append(p);}
+materialSelect.addEventListener('change',()=>{const m=materials.find(m=>m.id===materialSelect.value);form.elements.filamentPrice.value=m.price===null?'':String(m.price);render();});
 function paintSlider(slider){const low=Number(slider.min),high=Number(slider.max),value=Number(slider.value);slider.style.setProperty('--fill',`${Math.max(0,Math.min(100,(value-low)/(high-low)*100))}%`);}
 function syncSliders(){document.querySelectorAll('[data-slider]').forEach(s=>{const value=form.elements[s.dataset.slider].valueAsNumber;const base=Number(s.dataset.baseMax || s.max);s.dataset.baseMax=String(base);if(Number.isFinite(value)){s.max=String(Math.max(base,value));s.step='any';s.value=String(value);const labels=s.parentElement.querySelector('.range-label');if(labels)labels.lastElementChild.textContent=num(Number(s.max))+(s.dataset.slider==='mass'?' г':' ч');}paintSlider(s);});}
-function showInvalid(invalid){for(const key of Object.keys(bounds))form.elements[key].setAttribute('aria-invalid',String(invalid.includes(key)));const el=document.querySelector('#errors');el.hidden=!invalid.length;el.textContent=invalid.length?'Проверьте выделенные поля: введите число в допустимых пределах. Ресурс должен быть от 1 часа, количество — целым от 1, вероятность брака — от 0 до 95%.':'';}
+function showInvalid(invalid){for(const key of Object.keys(bounds).filter(k=>!dimensions.includes(k)))form.elements[key].setAttribute('aria-invalid',String(invalid.includes(key)));const el=document.querySelector('#errors');el.hidden=!invalid.length;el.textContent=invalid.length?'Проверьте выделенные поля: введите число в допустимых пределах. Ресурс должен быть от 1 часа, количество — целым от 1, вероятность брака — от 0 до 95%.':'';}
 function render(){
  const values={},invalid=[];
- for(const [key,[min,max]]of Object.entries(bounds)){const v=form.elements[key].valueAsNumber;values[key]=v;if(!Number.isFinite(v)||v<min||v>max||(key==='quantity'&&!Number.isInteger(v)))invalid.push(key);}
+ for(const [key,[min,max]]of Object.entries(bounds)){const field=form.elements[key];const v=dimensions.includes(key)&&field.value===''&&!field.validity.badInput?null:field.valueAsNumber;values[key]=v;if(!dimensions.includes(key)&&(!Number.isFinite(v)||v<min||v>max||(key==='quantity'&&!Number.isInteger(v))))invalid.push(key);}
  showInvalid(invalid);syncSliders();
  const fit=document.querySelector('#fit-note');
- const invalidDimensions=['x','y','z'].some(k=>invalid.includes(k));
- const fits=['x','y','z'].every(k=>values[k]<=180);
- fit.classList.toggle('warning',invalidDimensions||!fits);
- fit.textContent=invalidDimensions?'Исправьте габариты для проверки размера.':fits?'Габариты в пределах 180 × 180 × 180 мм. Проверьте размещение и место для каймы в слайсере.':'Размер превышает поле A1 mini (180 × 180 × 180 мм). Проверьте ориентацию, разделение модели или другой принтер.';
+ const invalidDimensions=dimensions.some(k=>values[k]!==null&&(!Number.isFinite(values[k])||values[k]<0||values[k]>10000));
+ const complete=dimensions.every(k=>values[k]!==null)&&!invalidDimensions;
+ const fits=complete?dimensions.every(k=>values[k]<=256):null;
+ for(const key of dimensions){const v=values[key];form.elements[key].setAttribute('aria-invalid',String(v!==null&&(!Number.isFinite(v)||v<0||v>10000)));}
+ fit.classList.toggle('warning',invalidDimensions||fits===false);
+ fit.textContent=invalidDimensions?'Исправьте заданные габариты для проверки размера. Стоимость продолжает рассчитываться.':fits===null?'Габариты необязательны. Заполните X, Y и Z для проверки поля A1: 256 × 256 × 256 мм. На стоимость они не влияют.':fits?'Габариты в пределах 256 × 256 × 256 мм. Проверьте размещение и место для каймы в слайсере.':'Размер превышает поле A1 (256 × 256 × 256 мм). Проверьте ориентацию, разделение модели или другой принтер.';
+ renderMaterial();
  document.querySelectorAll('[data-risk]').forEach(b=>{const active=Number(b.dataset.risk)===values.failure;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});
  if(invalid.length){document.querySelector('#total').textContent='—';document.querySelector('#per-unit').textContent='Исправьте поля для расчёта';document.querySelector('#breakdown').replaceChildren();document.querySelector('#cost-bar').replaceChildren();document.querySelector('#risk-cost').textContent='Расчёт приостановлен';document.querySelector('#risk-detail').textContent='Нет достоверного результата при неверных данных.';for(const id of ['expected-mass','expected-time','expected-energy'])document.getElementById(id).textContent='—';return;}
  const r=calculate(values);
@@ -32,13 +43,11 @@ function render(){
 }
 form.addEventListener('submit',e=>e.preventDefault());
 form.addEventListener('input',e=>{const slider=e.target.closest('[data-slider]');if(slider)form.elements[slider.dataset.slider].value=slider.value;
- if(e.target.name==='filamentPrice')document.querySelectorAll('[data-material]').forEach(b=>{b.classList.remove('active');b.setAttribute('aria-pressed','false');});
  if(e.target.name==='tariff')document.querySelector('#tariffPreset').value='custom';
  // Immediate visual feedback; brief debounce keeps screen reader announcements manageable.
  clearTimeout(timer);timer=setTimeout(render,80);
 });
 document.querySelector('#tariffPreset').addEventListener('change',e=>{if(e.target.value!=='custom'){form.elements.tariff.value=e.target.value;render();}});
-document.querySelectorAll('[data-material]').forEach(button=>button.addEventListener('click',()=>{form.elements.filamentPrice.value=button.dataset.material==='PLA'?44:46;document.querySelectorAll('[data-material]').forEach(b=>{const active=b===button;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});render();}));
 document.querySelectorAll('[data-risk]').forEach(b=>b.addEventListener('click',()=>{form.elements.failure.value=b.dataset.risk;render();}));
-document.querySelector('#reset').addEventListener('click',()=>{for(const [key,v]of Object.entries(defaults))form.elements[key].value=String(v);document.querySelector('#tariffPreset').value=String(defaults.tariff);document.querySelectorAll('[data-material]').forEach(b=>{const active=b.dataset.material==='PLA';b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});render();});
+document.querySelector('#reset').addEventListener('click',()=>{for(const [key,v]of Object.entries(defaults))form.elements[key].value=v===null?'':String(v);document.querySelector('#tariffPreset').value=String(defaults.tariff);materialSelect.value=defaultMaterial;render();});
 render();

@@ -1,33 +1,30 @@
-// Node DOM harness: exercises actual app handlers; not a real browser rendering test.
+// Real React SSR with a state harness, not a browser test.
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {calculate,defaults,bounds} from '../dist/calculator.mjs';
-import {materials,defaultMaterial} from '../dist/materials.mjs';
-class Element {
- constructor(){this.value='';this.textContent='';this.hidden=false;this.attrs={};this.dataset={};this.listeners={};this.children=[];this.style={setProperty(){}};this.classList={toggle(){}};this.validity={badInput:false};}
- get valueAsNumber(){return this.value===''?NaN:Number(this.value);}
- setAttribute(k,v){this.attrs[k]=v;}
- append(...v){this.children.push(...v);}
- replaceChildren(...v){this.children=v;}
- addEventListener(k,v){this.listeners[k]=v;}
- closest(){return null;}
-}
-const nodes=new Map();const get=id=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};
-const form=get('calculator');form.elements={};for(const [k,v]of Object.entries(defaults)){const e=new Element();e.name=k;e.value=v===null?'':String(v);form.elements[k]=e;}
-const sliders=['mass','hours','failure','loss'].map((key,i)=>{const s=new Element();s.dataset.slider=key;s.min=0;s.max=[2000,48,50,100][i];s.value=String(defaults[key]);s.parentElement={querySelector:()=>null};return s;});
-const document={querySelector:s=>get(s.slice(1)),querySelectorAll:s=>s==='[data-slider]'?sliders:[],createElement:()=>new Element(),createTextNode:v=>v,getElementById:get};
-let code=await readFile(new URL('../dist/app.mjs',import.meta.url),'utf8');code=code.replace(/^import .*;\n/gm,'');
-const context=vm.createContext({document,calculate,defaults,bounds,materials,defaultMaterial,Intl,Number,String,Math,setTimeout:fn=>{fn();return 0;},clearTimeout(){}});vm.runInContext(code,context);
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {transformSync} from 'esbuild';
+import * as calculator from '../src/calculator.mjs';
+import * as materials from '../src/materials.mjs';
+let states=[],cursor=0;
+const useState=initial=>{const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return [states[i],v=>{states[i]=typeof v==='function'?v(states[i]):v;}];};
+const {code}=transformSync(await readFile(new URL('../src/App.jsx',import.meta.url),'utf8'),{loader:'jsx',format:'cjs'});
+const module={exports:{}};
+const require=id=>id==='react'?{...React,useState}:id==='./calculator.mjs'?calculator:id==='./materials.mjs'?materials:(()=>{throw Error(id);})();
+vm.runInNewContext(code,{module,exports:module.exports,require,Intl,Number,String,Math,Object});
+const App=module.exports.default;
+function render(){cursor=0;const tree=App();return {tree,context:tree.props.value,html:renderToStaticMarkup(tree)};}
+function find(e,p){if(!e||typeof e!=='object')return null;if(p(e))return e;for(const c of React.Children.toArray(e.props?.children)){const f=find(c,p);if(f)return f;}return null;}
 let count=0;function test(name,fn){fn();count++;console.log(`PASS ${name}`);}
-const input=(key,value)=>{form.elements[key].value=String(value);form.listeners.input({target:form.elements[key]});};
-const select=id=>{get('materialPreset').value=id;get('materialPreset').listeners.change();};
-test('initial A1 and optional blank dimensions calculate',()=>{assert.equal(form.elements.printerPrice.value,'1130');assert.notEqual(get('total').textContent,'—');assert.match(get('fit-note').textContent,/необязательны/);});
-for(const mass of [501,2000.5,100000])test(`actual handler large mass ${mass}`,()=>{input('mass',mass);assert.equal(sliders[0].value,String(mass));assert.ok(Number(sliders[0].max)>=mass);assert.equal(sliders[0].step,'any');assert.equal(get('errors').hidden,true);});
-for(const value of ['',-1,10001,'bad'])test(`invalid or partial dimension ${value} does not block cost`,()=>{input('x',value);assert.equal(get('errors').hidden,true);assert.notEqual(get('total').textContent,'—');});
-test('full dimensions 256 fit then 257 warning',()=>{for(const k of ['x','y','z'])input(k,256);assert.match(get('fit-note').textContent,/в пределах/);input('x',257);assert.match(get('fit-note').textContent,/превышает/);});
-for(const [id,price]of [['anycubic-pla',44],['esun-pla',70],['bambu-pla',90],['creality-petg',46]])test(`preset ${id}`,()=>{select(id);assert.equal(form.elements.filamentPrice.value,String(price));assert.equal(get('errors').hidden,true);});
-for(const id of ['bambu-petg','elegoo-petg','custom'])test(`manual price ${id}`,()=>{select(id);assert.equal(form.elements.filamentPrice.value,'');assert.equal(get('errors').hidden,false);input('filamentPrice',65);assert.equal(get('errors').hidden,true);});
-test('fixed preset manual override remains explicit',()=>{select('esun-pla');input('filamentPrice',72);assert.match(get('material-note').textContent,/ваша цена/);assert.equal(get('errors').hidden,true);});
-test('reset restores defaults material and clears dimensions',()=>{get('reset').listeners.click();for(const[k,v]of Object.entries(defaults))assert.equal(form.elements[k].value,v===null?'':String(v));assert.equal(get('materialPreset').value,'anycubic-pla');assert.equal(get('errors').hidden,true);assert.match(get('fit-note').textContent,/необязательны/);});
-console.log(`${count} handler tests passed`);
+function set(key,value,bad=false){render().context.setValue(key,String(value),bad);return render();}
+test('SSR default A1 cost, material and blank dimensions',()=>{const {html,context}=render();assert.equal(context.values.printerPrice,'1130');assert.match(html,/id="total"[^>]*>3,75/);assert.match(html,/Габариты необязательны/);assert.equal(context.invalid.length,0);assert.equal(materials.materials.length,7);});
+for(const mass of [501,2000.5,100000])test(`large mass SSR ${mass}`,()=>{const {html,context}=set('mass',mass);assert.equal(context.invalid.length,0);const range=html.match(/<input[^>]*data-slider="mass"[^>]*>/)[0];assert.match(range,new RegExp(`max="${Math.max(2000,mass)}"`));assert.match(range,new RegExp(`value="${mass}"`));assert.match(range,/step="any"/);});
+for(const [value,bad] of [['',false],['-1',false],['10001',false],['',true]])test(`optional dimension ${value}/${bad}`,()=>{const {context,html}=set('x',value,bad);assert.equal(context.invalid.length,0);assert.ok(context.result);assert.match(html,bad||value==='-1'||value==='10001'?/Стоимость продолжает рассчитываться/:/Габариты необязательны/);});
+test('256 fits, 257 warns, incomplete null',()=>{for(const key of ['x','y','z'])set(key,256);assert.equal(render().context.result.fits,true);assert.match(render().html,/Габариты в пределах/);assert.equal(set('x',257).context.result.fits,false);assert.match(render().html,/Размер превышает/);assert.equal(set('z','').context.result.fits,null);});
+for(const [id,price] of [['anycubic-pla',44],['esun-pla',70],['bambu-pla',90],['creality-petg',46]])test(`fixed material ${id}`,()=>{render().context.chooseMaterial(id);const {context}=render();assert.equal(context.values.filamentPrice,String(price));assert.ok(context.result);});
+for(const id of ['bambu-petg','elegoo-petg','custom'])test(`manual material ${id}`,()=>{render().context.chooseMaterial(id);let r=render();assert.equal(r.context.values.filamentPrice,'');assert.equal(r.context.result,null);assert.match(r.html,/id="filamentPrice"[^>]*aria-invalid="true"/);assert.ok(set('filamentPrice',64).context.result);});
+test('override explicit',()=>{render().context.chooseMaterial('esun-pla');assert.match(set('filamentPrice',72).html,/Используется ваша цена за кг/);});
+test('tariff preset and custom state',()=>{render().context.setTariff('0.3037');assert.equal(render().context.values.tariff,'0.3037');set('tariff',.5);assert.equal(render().context.tariffPreset,'custom');});
+test('reset clears invalid inputs and restores defaults',()=>{set('x','',true);set('quantity',1.5);const button=find(render().tree,e=>e.props?.id==='reset');assert.ok(button);button.props.onClick();const {context,html}=render();for(const[k,v]of Object.entries(calculator.defaults))assert.equal(context.values[k],v===null?'':String(v));assert.equal(context.materialId,'anycubic-pla');assert.equal(context.invalid.length,0);assert.equal(context.invalidDimensions.length,0);assert.match(html,/id="total"[^>]*>3,75/);});
+console.log(`${count} React SSR/state tests passed`);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
-const modulePath = process.argv[2] || new URL('../dist/calculator.mjs', import.meta.url).pathname;
+const modulePath = process.argv[2] || new URL('../src/calculator.mjs', import.meta.url).pathname;
 const {calculate,defaults} = await import(pathToFileURL(modulePath));
 let count = 0;
 function test(name, fn) { fn(); count++; console.log(`PASS ${name}`); }
